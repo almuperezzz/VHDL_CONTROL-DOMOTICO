@@ -1,0 +1,63 @@
+library ieee;
+use ieee.std_logic_1164.all;
+use ieee.numeric_std.all;
+
+entity clock_divider is
+    generic (
+        DIV_1HZ  : natural := 100_000_000; -- para clk_100m
+        DIV_DISP : natural := 100_000      -- ~1 kHz
+    );
+    port (
+        clk_in   : in  std_logic;
+        rst      : in  std_logic;
+        clk_1hz  : out std_logic;
+        clk_disp : out std_logic
+    );
+end entity clock_divider;
+
+architecture rtl of clock_divider is
+
+    signal cnt_1hz   : unsigned(31 downto 0) := (others => '0');
+    signal clk_1hz_r : std_logic := '0';
+
+    signal cnt_disp   : unsigned(31 downto 0) := (others => '0');
+    signal clk_disp_r : std_logic := '0';
+
+begin
+
+    -- Divisor para 1 Hz
+    process(clk_in, rst)
+    begin
+        if rst = '1' then
+            cnt_1hz   <= (others => '0');
+            clk_1hz_r <= '0';
+        elsif rising_edge(clk_in) then
+            if cnt_1hz = to_unsigned(DIV_1HZ/2 - 1, cnt_1hz'length) then
+                cnt_1hz   <= (others => '0');
+                clk_1hz_r <= not clk_1hz_r;
+            else
+                cnt_1hz <= cnt_1hz + 1;
+            end if;
+        end if;
+    end process;
+
+    -- Divisor para reloj de display
+    process(clk_in, rst)
+    begin
+        if rst = '1' then
+            cnt_disp   <= (others => '0');
+            clk_disp_r <= '0';
+        elsif rising_edge(clk_in) then
+            if cnt_disp = to_unsigned(DIV_DISP/2 - 1, cnt_disp'length) then
+                cnt_disp   <= (others => '0');
+                clk_disp_r <= not clk_disp_r;
+            else
+                cnt_disp <= cnt_disp + 1;
+            end if;
+        end if;
+    end process;
+
+    clk_1hz  <= clk_1hz_r;
+    clk_disp <= clk_disp_r;
+
+end architecture rtl;
