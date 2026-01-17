@@ -1,0 +1,122 @@
+library ieee;
+use ieee.std_logic_1164.all;
+
+entity room_fsm is
+    port (
+        clk            : in  std_logic;
+        rst            : in  std_logic;
+        presence       : in  std_logic;  -- sensor presencia (SW7)
+        timer10_done   : in  std_logic;  -- pulso 10 s (a clk_100m)
+
+        light_on       : out std_logic;
+        blind_up_cmd   : out std_logic;
+        blind_down_cmd : out std_logic;
+        timer10_start  : out std_logic   -- arranca timer 10 s
+    );
+end entity room_fsm;
+
+architecture rtl of room_fsm is
+
+    type state_t is (
+        EMPTY_BLINDS_DOWN,            -- nadie, luz off, persiana abajo
+        PRESENCE_LIGHT_ON_WAIT_UP,    -- hay presencia, esperando 10 s para subir
+        PRESENCE_LIGHT_ON_BLINDS_UP,  -- presencia, persiana arriba
+        WAIT_LIGHT_OFF_BLINDS_DOWN    -- sin presencia, esperando 10 s para bajar
+    );
+
+    signal state, next_state : state_t;
+
+begin
+
+    --------------------------------------------------------------------
+    -- Registro de estado
+    --------------------------------------------------------------------
+    process(clk, rst)
+    begin
+        if rst = '1' then
+            state <= EMPTY_BLINDS_DOWN;
+        elsif rising_edge(clk) then
+            state <= next_state;
+        end if;
+    end process;
+
+    --------------------------------------------------------------------
+    -- Lógica de siguiente estado
+    --------------------------------------------------------------------
+    process(state, presence, timer10_done)
+    begin
+        next_state <= state;
+
+        case state is
+
+            when EMPTY_BLINDS_DOWN =>
+                if presence = '1' then
+                    -- entra alguien, empezamos a contar 10 s
+                    next_state <= PRESENCE_LIGHT_ON_WAIT_UP;
+                end if;
+
+            when PRESENCE_LIGHT_ON_WAIT_UP =>
+                if presence = '0' then
+                    -- se va ANTES de 10 s: persiana nunca se sube
+                    next_state <= EMPTY_BLINDS_DOWN;
+                elsif timer10_done = '1' then
+                    -- 10 s seguidos con presencia: sube persiana
+                    next_state <= PRESENCE_LIGHT_ON_BLINDS_UP;
+                end if;
+
+            when PRESENCE_LIGHT_ON_BLINDS_UP =>
+                if presence = '0' then
+                    -- se va con persiana arriba: empezamos espera para bajar
+                    next_state <= WAIT_LIGHT_OFF_BLINDS_DOWN;
+                end if;
+
+            when WAIT_LIGHT_OFF_BLINDS_DOWN =>
+                if presence = '1' then
+                    -- vuelve alguien: persiana se queda arriba, luz encendida.
+                    -- NO reiniciamos ciclo de subida, nos quedamos en este estado.
+                    next_state <= WAIT_LIGHT_OFF_BLINDS_DOWN;
+                elsif timer10_done = '1' then
+                    -- 10 s sin nadie: bajamos persiana y apagamos luz
+                    next_state <= EMPTY_BLINDS_DOWN;
+                end if;
+
+        end case;
+    end process;
+
+    --------------------------------------------------------------------
+    -- Salidas tipo Moore
+    --------------------------------------------------------------------
+    process(state, presence)
+    begin
+        light_on       <= '0';
+        blind_up_cmd   <= '0';
+        blind_down_cmd <= '0';
+        timer10_start  <= '0';
+
+        case state is
+
+            when EMPTY_BLINDS_DOWN =>
+                -- nadie: luz off, persiana abajo
+                null;
+
+            when PRESENCE_LIGHT_ON_WAIT_UP =>
+                -- hay presencia, luz ON, persiana abajo, contando 10 s para subir
+                light_on      <= '1';
+                timer10_start <= '1';
+
+            when PRESENCE_LIGHT_ON_BLINDS_UP =>
+                -- presencia, luz ON, persiana arriba
+                light_on     <= '1';
+                blind_up_cmd <= '1';
+
+            when WAIT_LIGHT_OFF_BLINDS_DOWN =>
+                -- sin presencia o ha vuelto antes de bajar:
+                -- persiana arriba, luz solo si presence=1
+                light_on      <= presence;
+                blind_up_cmd  <= '1';
+                timer10_start <= '1';   -- cuenta 10 s para bajar cuando no haya nadie
+
+        end case;
+    end process;
+
+end architecture rtl;
