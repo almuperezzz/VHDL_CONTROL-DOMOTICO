@@ -1,0 +1,414 @@
+library ieee;
+use ieee.std_logic_1164.all;
+use ieee.numeric_std.all;
+
+entity top is
+    port (
+        clk_100m : in  std_logic;
+        btn      : in  std_logic_vector(3 downto 0);  -- BTN0..BTN3
+        sw       : in  std_logic_vector(15 downto 0); -- SW0..SW15
+
+        led      : out std_logic_vector(15 downto 0); -- LED0..LED15
+        an       : out std_logic_vector(7 downto 0);  -- AN0..AN7
+        seg      : out std_logic_vector(6 downto 0);   -- a..g
+       
+        rgb0_r   : out std_logic;   -- LED RGB rojo
+        rgb0_g   : out std_logic;   -- LED RGB verde
+        rgb0_b   : out std_logic;   -- LED RGB azul
+        
+        UART_TXD_IN : out std_logic;
+       
+        AUD_PWM  : out std_logic;  -- salida audio PWM
+        AUD_SD   : out std_logic   -- shutdown del ampli (1 = encendido)
+    );
+end entity top;
+
+architecture rtl of top is
+        
+        -- Reset síncrono (BTN0 activo alto)
+        signal rst          : std_logic;
+        
+        -- Relojes derivados
+        signal clk_1hz      : std_logic;
+        signal clk_disp     : std_logic;
+        
+        -- Señales habitación principal
+        signal presence_main    : std_logic;
+        
+        signal light_on_room    : std_logic;
+        signal blind_up_room    : std_logic;
+        signal blind_down_room  : std_logic;
+        
+        signal light_main       : std_logic;
+        signal blind_up_main    : std_logic;
+        signal blind_dn_main    : std_logic;
+        
+        signal t10_start        : std_logic;
+        signal t10_done         : std_logic;
+        
+        
+        signal t10_done_sync, t10_done_prev : std_logic := '0';
+        signal t10_pulse                    : std_logic := '0';
+        
+        -- Señales riego
+        signal water_on      : std_logic;
+        signal water_start   : std_logic;
+        signal tirrig_done   : std_logic;
+        
+        -- Señales alarma / código
+        signal armed           : std_logic;
+        signal door_main_open  : std_logic;
+        signal code_ok         : std_logic;
+        signal countdown_done  : std_logic;
+        signal alarm_active    : std_logic;
+        signal countdown_val   : std_logic_vector(3 downto 0);
+        
+        signal start_toggle       : std_logic;        -- NUEVA: de security_fsm
+        signal start_toggle_100m  : std_logic := '0'; -- ya la tenías
+        signal st_ff0, st_ff1     : std_logic := '0';
+        signal start_pulse_1hz    : std_logic := '0';
+        
+        -- Señales display
+        signal mode_alarm   : std_logic;
+        signal domo_value   : std_logic_vector(15 downto 0);
+        
+        signal beep_clk : std_logic := '0';
+        signal beep_cnt : unsigned(15 downto 0) := (others => '0');
+        signal rst_countdown : std_logic;
+        
+        --señales para los modos
+        signal mode_day      : std_logic;
+        signal mode_night    : std_logic;
+        signal mode_vacation : std_logic;
+        
+        -- forzar bajada de persiana al entrar en noche/vacaciones
+        signal mode_prev_night    : std_logic := '0';
+        signal mode_prev_vacation : std_logic := '0';
+        signal force_blinds_down  : std_logic := '0';
+        
+        --señales para el uart
+        signal uart_start : std_logic := '0';
+        signal uart_data  : std_logic_vector(7 downto 0) := (others => '0');
+        signal uart_busy  : std_logic;
+        signal uart_pending : std_logic := '0';  -- Añade esta señal arriba, junto a prev_mode_vacation
+        
+        signal prev_mode_vacation : std_logic := '0';
+
+begin
+    --------------------------------------------------------------------
+    -- Asignaciones simples desde E/S físicas
+    --------------------------------------------------------------------
+    rst <= not btn(0);   -- cpu_resetn: 0 al pulsar, lo invertimos
+    presence_main <= sw(7);                   -- presencia en hab principal
+    armed         <= sw(1);                   -- sistema armado
+    door_main_open<= presence_main;           -- la misma señal actúa de puerta
+    mode_alarm <= armed and not code_ok and not alarm_active;                  -- cuando hay alarma/armado, display en modo alarma
+
+    --------------------------------------------------------------------
+    -- clock_divider
+    --------------------------------------------------------------------
+    u_clkdiv : entity work.clock_divider
+        generic map (
+            DIV_1HZ  => 100_000_000,
+            DIV_DISP => 100_000
+        )
+        port map (
+            clk_in   => clk_100m,
+            rst      => rst,
+            clk_1hz  => clk_1hz,
+            clk_disp => clk_disp
+        );
+
+    --------------------------------------------------------------------
+    -- Timer 10 s para luz/persiana
+    --------------------------------------------------------------------
+    u_timer10 : entity work.timer
+        generic map (
+            MAX_COUNT => 10
+           -- MAX_COUNT => 3      -- SIMULACIÓN: antes era 10
+        )
+        port map (
+            clk      => clk_1hz,
+            rst      => rst,
+            start    => t10_start,
+            done     => t10_done
+        );
+--------------------------------------------------------------------
+-- Sincronizador t10_done (1 Hz) -> pulso a clk_100m
+--------------------------------------------------------------------
+process(clk_100m, rst)
+begin
+    if rst = '1' then
+        t10_done_sync <= '0';
+        t10_done_prev <= '0';
+        t10_pulse     <= '0';
+    elsif rising_edge(clk_100m) then
+        t10_done_sync <= t10_done;   -- viene del timer a 1 Hz
+
+        t10_pulse <= '0';
+        if t10_done_prev = '0' and t10_done_sync = '1' then
+            t10_pulse <= '1';        -- flanco único para la FSM
+        end if;
+
+        t10_done_prev <= t10_done_sync;
+    end if;
+end process;
+--------------------------------------------------------------------
+-- (1 Hz) -> pulso a clk_100m
+--------------------------------------------------------------------
+process(clk_1hz, rst)
+begin
+  if rst = '1' then
+    st_ff0 <= '0';
+    st_ff1 <= '0';
+    start_pulse_1hz <= '0';
+  elsif rising_edge(clk_1hz) then
+    st_ff0 <= start_toggle_100m;
+    st_ff1 <= st_ff0;
+    start_pulse_1hz <= st_ff0 xor st_ff1;  -- pulso seguro en 1 Hz
+  end if;
+end process;
+
+    --------------------------------------------------------------------
+    -- FSM habitación principal (luz + persiana)
+    --------------------------------------------------------------------
+    u_room_main : entity work.room_fsm
+    port map (
+        clk            => clk_100m,
+        rst            => rst,
+        presence       => presence_main,
+        timer10_done   => t10_pulse,
+
+        light_on       => light_on_room,
+        blind_up_cmd   => blind_up_room,
+        blind_down_cmd => blind_down_room,
+        timer10_start  => t10_start
+    );
+--------------------------------------------------------------------
+-- Aplicación de modos a la habitación
+--------------------------------------------------------------------
+-- Luz principal
+light_main <=
+    light_on_room when mode_day = '1' else    -- día: normal
+    light_on_room when mode_night = '1' else  -- noche: permites luz
+    '0';                                      -- vacaciones: luz siempre off
+
+-- Persiana subir
+blind_up_main <=
+    blind_up_room when mode_day = '1' else    -- día: normal
+    '0';                                      -- noche/vacaciones: nunca sube
+
+-- Persiana bajar (siempre permitida)
+blind_dn_main <= blind_down_room or force_blinds_down;
+--------------------------------------------------------------------
+-- Forzar bajada de persiana al entrar en NOCHE o VACACIONES
+--------------------------------------------------------------------
+process(clk_100m, rst)
+begin
+    if rst = '1' then
+        mode_prev_night    <= '0';
+        mode_prev_vacation <= '0';
+        force_blinds_down  <= '0';
+    elsif rising_edge(clk_100m) then
+        force_blinds_down <= '0';
+
+        -- flanco de subida de modo_night
+        if mode_prev_night = '0' and mode_night = '1' then
+            force_blinds_down <= '1';
+        end if;
+
+        -- flanco de subida de modo_vacation
+        if mode_prev_vacation = '0' and mode_vacation = '1' then
+            force_blinds_down <= '1';
+        end if;
+
+        mode_prev_night    <= mode_night;
+        mode_prev_vacation <= mode_vacation;
+    end if;
+end process;
+
+    --------------------------------------------------------------------
+    -- Timer y FSM de riego (ejemplo simple)
+    --------------------------------------------------------------------
+    u_timer_irrig : entity work.timer
+        generic map (
+            MAX_COUNT => 30    -- riego cada 30 s, por ejemplo
+            -- MAX_COUNT => 5      -- SIMULACIÓN: antes era 30
+        )
+        port map (
+            clk      => clk_1hz,
+            rst      => rst,
+            start    => '1',          -- siempre contando periodos
+            done     => tirrig_done
+        );
+
+   u_irrigation : entity work.irrigation_fsm
+    port map (
+        clk         => clk_100m,
+        rst         => rst,
+        tick_period => tirrig_done,  -- pulso cada periodo, NO el reloj
+        water_done  => tirrig_done,  -- o un segundo timer solo para duración
+
+        water_on    => water_on,
+        start_water => water_start
+    );
+
+    --------------------------------------------------------------------
+    -- Comprobador de código (SW5..SW2 + BTN1)
+    --------------------------------------------------------------------
+    u_code : entity work.code_checker
+        generic map (
+            CODE_VALUE => "1010"        -- código 0b1010 en SW5..SW2
+        )
+        port map (
+            clk      => clk_100m,
+            rst      => rst,
+            sw_code  => sw(5 downto 2),
+            btn_ok   => btn(1),
+            code_ok  => code_ok
+        );
+
+    --------------------------------------------------------------------
+    -- FSM de alarma
+    --------------------------------------------------------------------
+    u_security : entity work.security_fsm
+    port map (
+        clk            => clk_100m,
+        rst            => rst,
+        armed          => armed,
+        door_main_open => door_main_open,
+        code_ok        => code_ok,
+        countdown_done => countdown_done,
+        reset_alarm    => btn(2),
+
+        start_toggle   => start_toggle,   -- aquí tu nueva señal
+        alarm_active   => alarm_active
+    );
+ --------------------------------------------------------------------
+-- Toggle en dominio 100 MHz a partir de start_toggle (FSM)
+--------------------------------------------------------------------
+process(clk_100m, rst)
+begin
+    if rst = '1' then
+        start_toggle_100m <= '0';
+    elsif rising_edge(clk_100m) then
+        if start_toggle = '1' then          -- pulso de security_fsm
+            start_toggle_100m <= not start_toggle_100m;
+        end if;
+    end if;
+end process;
+
+--------------------------------------------------------------------
+    -- Modos de la casa
+    --------------------------------------------------------------------
+u_modes : entity work.modes_fsm
+    port map (
+        clk           => clk_100m,
+        rst           => rst,
+        btn_next      => btn(3),
+        mode_day      => mode_day,
+        mode_night    => mode_night,
+        mode_vacation => mode_vacation
+    );
+    --------------------------------------------------------------------
+    -- Enviar 'V' por UART al entrar en modo VACACIONES
+    --------------------------------------------------------------------
+process(clk_100m, rst)
+begin
+    if rst = '1' then
+        prev_mode_vacation <= '0';
+        uart_start         <= '0';
+        uart_data          <= (others => '0');
+    elsif rising_edge(clk_100m) then
+        uart_start <= '0';  -- por defecto sin enviar
+
+        if prev_mode_vacation = '0' and mode_vacation = '1' and uart_busy = '0' then
+            uart_data  <= x"56";   -- ASCII 'V'
+            uart_start <= '1';     -- pulso de envío
+        end if;
+
+        prev_mode_vacation <= mode_vacation;
+    end if;
+end process;
+
+
+    --------------------------------------------------------------------
+    -- Contador regresivo de alarma (ejemplo como timer/contador aparte)
+    --------------------------------------------------------------------
+u_countdown : entity work.countdown
+    port map (
+        clk    => clk_1hz,          -- reloj lento
+        rst   => rst_countdown,   -- reset si pulsas código correcto
+        start  => start_pulse_1hz,  -- pulso generado con toggle
+        value  => countdown_val,
+        done   => countdown_done
+    );
+-- combinación de resets
+rst_countdown <= rst or code_ok;
+
+    --------------------------------------------------------------------
+    -- Generador de tono ~1 kHz para la sirena
+    --------------------------------------------------------------------
+    process(clk_100m)
+    begin
+        if rising_edge(clk_100m) then
+            if beep_cnt = 49999 then              -- 100 MHz / (2*50000) ≈ 1 kHz
+                beep_cnt <= (others => '0');
+                beep_clk <= not beep_clk;
+            else
+                beep_cnt <= beep_cnt + 1;
+            end if;
+        end if;
+    end process;
+
+    -- Audio: amplificador siempre encendido
+    AUD_SD  <= '1';
+    -- Sirena: tono solo cuando alarm_active = '1'
+    AUD_PWM <= beep_clk when alarm_active = '1' else '0';
+
+    --------------------------------------------------------------------
+    -- Display controller
+    --------------------------------------------------------------------
+    -- Ejemplo: domo_value de momento 0, ya lo rellenarás con contadores/estados
+    domo_value <= (others => '0');
+
+    u_display : entity work.display_controller
+        port map (
+            clk_disp   => clk_disp,
+            rst        => rst,
+            mode_alarm => mode_alarm,
+            countdown  => countdown_val,
+            domo_value => domo_value,
+
+            an         => an,
+            seg        => seg
+        );
+    --------------------------------------------------------------------
+    -- instancia de conexion con el pc
+    --------------------------------------------------------------------
+    u_uart_tx : entity work.uart_tx
+    port map (
+        clk   => clk_100m,
+        rst   => rst,
+        start => uart_start,
+        data  => uart_data,
+        busy  => uart_busy,
+        tx    => UART_TXD_IN
+    );
+
+    --------------------------------------------------------------------
+    -- Asignación a LEDs para depuración
+    --------------------------------------------------------------------
+    led(0) <= light_main;
+    led(1) <= blind_up_main;
+
+    led(3) <= water_on;
+    led(4) <= alarm_active; --se activa la alarma
+    led(5) <= code_ok;
+    led(2) <= mode_night and presence_main;
+    
+    rgb0_r <= mode_night;
+    rgb0_g <= mode_vacation;
+    rgb0_b <= mode_day;
+
+end architecture rtl;
