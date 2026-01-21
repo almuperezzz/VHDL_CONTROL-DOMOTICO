@@ -1,0 +1,33 @@
+library ieee;
+use ieee.std_logic_1164.all;
+
+entity code_checker is
+  generic (
+    CODE_VALUE : std_logic_vector(3 downto 0) := "1010"
+  );
+  port (
+    clk      : in  std_logic;
+    rst      : in  std_logic;
+    sw_code  : in  std_logic_vector(3 downto 0);
+    btn_ok   : in  std_logic;
+    code_ok  : out std_logic
+  );
+end entity;
+
+architecture rtl of code_checker is
+begin
+    process(clk, rst)
+    begin
+        if rst = '1' then
+            code_ok <= '0';
+        elsif rising_edge(clk) then
+            -- Mantiene '1' mientras el código sea correcto y el botón esté pulsado
+            if (sw_code = CODE_VALUE) and (btn_ok = '1') then
+                code_ok <= '1';
+            else
+                code_ok <= '0';
+            end if;
+        end if;
+    end process;
+end architecture;
+
