@@ -1,0 +1,49 @@
+library ieee;
+use ieee.std_logic_1164.all;
+use ieee.numeric_std.all;
+entity countdown is
+    generic (
+        MAX_COUNT : integer := 9
+    );
+    port (
+        clk    : in  std_logic;
+        rst    : in  std_logic;
+        start  : in  std_logic;
+        value  : out std_logic_vector(3 downto 0);
+        done   : out std_logic
+    );
+end entity countdown;
+
+
+architecture rtl of countdown is
+    signal counter : integer range 0 to MAX_COUNT := 0;
+    signal active  : std_logic := '0';           -- indica si está contando
+begin
+    process(clk, rst)
+    begin
+        if rst = '1' then
+            counter <= 0;
+            active  <= '0';
+            done    <= '0';
+        elsif rising_edge(clk) then
+            if start = '1' and active = '0' then
+                -- arranca la cuenta atrás
+                counter <= 9;
+                active  <= '1';
+                done    <= '0';
+            elsif active = '1' then
+                if counter > 0 then
+                    counter <= counter - 1;
+                else
+                    done    <= '1';  -- llegó a 0
+                    active  <= '0';  -- se detiene
+                end if;
+            end if;
+        end if;
+    end process;
+
+    value <= std_logic_vector(to_unsigned(counter, 4));
+end architecture rtl;
+
+
+
