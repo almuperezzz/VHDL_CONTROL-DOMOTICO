@@ -1,0 +1,49 @@
+library ieee;
+use ieee.std_logic_1164.all;
+use ieee.numeric_std.all;
+
+entity display_controller is
+    port (
+        clk_disp   : in  std_logic;
+        rst        : in  std_logic;
+        mode_alarm : in  std_logic;                  -- por ahora siempre '1'
+        countdown  : in  std_logic_vector(3 downto 0);
+        domo_value : in  std_logic_vector(15 downto 0); -- no usado aún
+
+        an         : out std_logic_vector(7 downto 0);
+        seg        : out std_logic_vector(6 downto 0)
+    );
+end entity display_controller;
+
+architecture rtl of display_controller is
+    signal digit_val : std_logic_vector(3 downto 0);
+    signal seg_reg   : std_logic_vector(6 downto 0);
+begin
+    -- Selección de valor a mostrar: SOLO countdown
+    process(mode_alarm, countdown, domo_value)
+    begin
+        digit_val <= countdown;  -- ignora mode_alarm y domo_value
+    end process;
+
+    -- Decoder 0..9 activo en bajo, orden g f e d c b a
+    process(digit_val)
+    begin
+        case digit_val is
+            when "0000" => seg_reg <= "1000000"; -- 0
+            when "0001" => seg_reg <= "1111001"; -- 1
+            when "0010" => seg_reg <= "0100100"; -- 2
+            when "0011" => seg_reg <= "0110000"; -- 3
+            when "0100" => seg_reg <= "0011001"; -- 4
+            when "0101" => seg_reg <= "0010010"; -- 5
+            when "0110" => seg_reg <= "0000010"; -- 6
+            when "0111" => seg_reg <= "1111000"; -- 7
+            when "1000" => seg_reg <= "0000000"; -- 8
+            when "1001" => seg_reg <= "0010000"; -- 9
+            when others => seg_reg <= "1111111"; -- apagado
+        end case;
+    end process;
+
+    an  <= "11111110";  -- solo AN0
+    seg <= seg_reg;
+end architecture rtl;
+
