@@ -1,0 +1,121 @@
+library ieee;
+use ieee.std_logic_1164.all;
+
+entity security_fsm is
+    port (
+        clk            : in  std_logic;
+        rst            : in  std_logic;
+        armed          : in  std_logic;
+        door_main_open : in  std_logic;
+        code_ok        : in  std_logic;
+        countdown_done : in  std_logic;
+        reset_alarm    : in  std_logic;
+
+        start_toggle   : out std_logic;  -- para arrancar el countdown (toggle)
+        alarm_active   : out std_logic   -- LED de alarma activada
+    );
+end entity security_fsm;
+
+architecture rtl of security_fsm is
+    type state_t is (SAFE_DISARMED, ARMED_IDLE, ENTRY_DETECTED, WAIT_CODE, ALARM_ON);
+    signal state, next_state : state_t;
+    signal start_toggle_reg  : std_logic := '0';
+    signal used_this_entry : std_logic := '0';
+begin
+
+    ----------------------------------------------------------------
+    -- Registro de estado + generación de start_toggle
+    ----------------------------------------------------------------
+    process(clk, rst)
+begin
+    if rst = '1' then
+        state            <= SAFE_DISARMED;
+        start_toggle_reg <= '0';
+        used_this_entry  <= '0';
+    elsif rising_edge(clk) then
+        state <= next_state;
+
+        -- marca que ya se lanzó una cuenta en esta entrada
+        if (state = ARMED_IDLE) and (next_state = ENTRY_DETECTED) then
+            start_toggle_reg <= '1';       -- lanzar countdown SOLO una vez
+            used_this_entry  <= '1';
+        else
+            start_toggle_reg <= '0';
+        end if;
+
+        -- al volver a SAFE_DISARMED o ARMED_IDLE "limpio", se puede usar otra vez
+        if (next_state = SAFE_DISARMED) then
+            used_this_entry <= '0';
+        end if;
+    end if;
+end process;
+
+
+    ----------------------------------------------------------------
+    -- Lógica de siguiente estado
+    ----------------------------------------------------------------
+    process(state, armed, door_main_open, code_ok, countdown_done, reset_alarm)
+    begin
+        next_state <= state;
+
+        case state is
+
+            when SAFE_DISARMED =>
+                if armed = '1' then
+                    next_state <= ARMED_IDLE;
+                end if;
+
+            when ARMED_IDLE =>
+    if armed = '0' then
+        next_state <= SAFE_DISARMED;
+    elsif (door_main_open = '1') and (used_this_entry = '0') then
+        next_state <= ENTRY_DETECTED;  -- solo si aún no se ha usado
+    end if;
+
+
+            when ENTRY_DETECTED =>
+                -- un ciclo aquí; luego siempre pasas a esperar código
+                next_state <= WAIT_CODE;
+
+            when WAIT_CODE =>
+                if armed = '0' then
+                    next_state <= SAFE_DISARMED;
+                elsif code_ok = '1' then
+                    next_state <= ARMED_IDLE;     -- código correcto a tiempo
+                elsif countdown_done = '1' then
+                    next_state <= ALARM_ON;       -- se acabó el tiempo
+                end if;
+
+            when ALARM_ON =>
+                if reset_alarm = '1' then         -- botón de reset alarma
+                    if armed = '1' then
+                        next_state <= ARMED_IDLE;
+                    else
+                        next_state <= SAFE_DISARMED;
+                    end if;
+                end if;
+
+        end case;
+    end process;
+
+    ----------------------------------------------------------------
+    -- Salidas
+    ----------------------------------------------------------------
+    -- Pulso hacia el toggle en el top
+    start_toggle <= start_toggle_reg;
+
+    -- LED de alarma activada: solo en ALARM_ON
+    process(state)
+    begin
+        alarm_active <= '0';
+        case state is
+            when ALARM_ON =>
+                alarm_active <= '1';
+            when others =>
+                alarm_active <= '0';
+        end case;
+    end process;
+
+end architecture rtl;
+
+
