@@ -1,0 +1,79 @@
+library ieee;
+use ieee.std_logic_1164.all;
+use ieee.numeric_std.all;
+
+entity timer is
+    generic (
+        MAX_COUNT : natural := 10   -- número de ticks de clk
+    );
+    port (
+        clk   : in  std_logic;
+        rst   : in  std_logic;
+        start : in  std_logic;      -- pulso de inicio
+        done  : out std_logic       -- '1' cuando termina
+    );
+end entity timer;
+
+architecture rtl of timer is
+    type state_t is (IDLE, COUNTING, FINISHED);
+    signal state, next_state : state_t;
+
+    signal cnt_reg : unsigned(31 downto 0) := (others => '0');
+    signal done_reg: std_logic := '0';
+begin
+    --------------------------------------------------------------------
+    -- Registro de estado y contador
+    --------------------------------------------------------------------
+    process(clk, rst)
+    begin
+        if rst = '1' then
+            state   <= IDLE;
+            cnt_reg <= (others => '0');
+            done_reg<= '0';
+        elsif rising_edge(clk) then
+            state <= next_state;
+
+            case state is
+                when IDLE =>
+                    done_reg <= '0';
+                    if start = '1' then
+                        cnt_reg <= (others => '0');
+                    end if;
+
+                when COUNTING =>
+                    if cnt_reg < to_unsigned(MAX_COUNT, cnt_reg'length) then
+                        cnt_reg <= cnt_reg + 1;
+                    end if;
+
+                when FINISHED =>
+                    done_reg <= '1';
+            end case;
+        end if;
+    end process;
+
+    --------------------------------------------------------------------
+    -- Lógica de siguiente estado
+    --------------------------------------------------------------------
+    process(state, start, cnt_reg)
+    begin
+        next_state <= state;
+        case state is
+            when IDLE =>
+                if start = '1' then
+                    next_state <= COUNTING;
+                end if;
+
+            when COUNTING =>
+                if cnt_reg = to_unsigned(MAX_COUNT, cnt_reg'length) then
+                    next_state <= FINISHED;
+                end if;
+
+            when FINISHED =>
+                -- se queda en FINISHED hasta que llegue un nuevo start
+                next_state <= IDLE;
+        end case;
+    end process;
+
+    done <= done_reg;
+
+end architecture rtl;
