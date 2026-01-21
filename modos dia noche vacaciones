@@ -1,0 +1,48 @@
+library IEEE;
+use IEEE.STD_LOGIC_1164.ALL;
+entity modes_fsm is
+    port (
+        clk    : in  std_logic;
+        rst    : in  std_logic;
+        btn_next : in  std_logic;   -- para ir cambiando de modo
+
+        mode_day        : out std_logic;
+        mode_night      : out std_logic;
+        mode_vacation   : out std_logic
+    );
+end entity;
+architecture rtl of modes_fsm is
+    type mode_t is (DAY, NIGHT, VACATION);
+    signal mode_reg, mode_next : mode_t;
+    signal btn_sync : std_logic_vector(1 downto 0) := (others => '0');
+begin
+    -- Registro de estado + detección de flanco en btn_next
+    process(clk, rst)
+    begin
+        if rst = '1' then
+            mode_reg <= DAY;
+            btn_sync <= (others => '0');
+        elsif rising_edge(clk) then
+            mode_reg <= mode_next;
+            btn_sync <= btn_sync(0) & btn_next;
+        end if;
+    end process;
+
+    -- Lógica de siguiente estado: flanco de subida en btn_next
+    process(mode_reg, btn_sync)
+    begin
+        mode_next <= mode_reg;
+        if btn_sync = "01" then         -- flanco subida
+            case mode_reg is
+                when DAY       => mode_next <= NIGHT;
+                when NIGHT     => mode_next <= VACATION;
+                when VACATION  => mode_next <= DAY;
+            end case;
+        end if;
+    end process;
+
+    -- Salidas one-hot
+    mode_day      <= '1' when mode_reg = DAY      else '0';
+    mode_night    <= '1' when mode_reg = NIGHT    else '0';
+    mode_vacation <= '1' when mode_reg = VACATION else '0';
+end architecture;
