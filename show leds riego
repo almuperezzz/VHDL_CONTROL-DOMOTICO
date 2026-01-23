@@ -1,0 +1,104 @@
+library ieee;
+use ieee.std_logic_1164.all;
+use ieee.numeric_std.all;
+
+entity riego_led_show is
+  generic(
+    CLK_HZ  : natural := 100_000_000; -- reloj de entrada (Hz)
+    STEP_HZ : natural := 8            -- pasos por segundo del efecto
+  );
+  port(
+    clk          : in  std_logic;
+    rst          : in  std_logic;
+    riego_active : in  std_logic; -- 1 => animación activa
+    leds         : out std_logic_vector(6 downto 0) -- para LED15..LED9
+  );
+end entity riego_led_show;
+
+architecture rtl of riego_led_show is
+  constant DIV_MAX : natural := CLK_HZ / STEP_HZ;
+
+  signal div_cnt : unsigned(31 downto 0) := (others => '0');
+  signal tick    : std_logic := '0';
+
+  signal pos   : integer range 0 to 6 := 0;
+  signal dir   : std_logic := '0'; -- 0: 0->6, 1: 6->0
+  signal phase : std_logic := '0';
+begin
+
+  -- Genera un tick visible (enable) a STEP_HZ
+  process(clk, rst)
+  begin
+    if rst = '1' then
+      div_cnt <= (others => '0');
+      tick    <= '0';
+    elsif rising_edge(clk) then
+      tick <= '0';
+
+      if riego_active = '1' then
+        if div_cnt = to_unsigned(DIV_MAX-1, div_cnt'length) then
+          div_cnt <= (others => '0');
+          tick    <= '1';
+        else
+          div_cnt <= div_cnt + 1;
+        end if;
+      else
+        div_cnt <= (others => '0');
+      end if;
+    end if;
+  end process;
+
+  -- Actualiza la posición del “punto” en ping-pong
+  process(clk, rst)
+  begin
+    if rst = '1' then
+      pos   <= 0;
+      dir   <= '0';
+      phase <= '0';
+    elsif rising_edge(clk) then
+      if riego_active = '0' then
+        pos   <= 0;
+        dir   <= '0';
+        phase <= '0';
+      elsif tick = '1' then
+        phase <= not phase;
+
+        if dir = '0' then
+          if pos = 6 then
+            dir <= '1';
+            pos <= 5;
+          else
+            pos <= pos + 1;
+          end if;
+        else
+          if pos = 0 then
+            dir <= '0';
+            pos <= 1;
+          else
+            pos <= pos - 1;
+          end if;
+        end if;
+      end if;
+    end if;
+  end process;
+
+  -- Patrón de salida (combinacional)
+  process(pos, phase, riego_active)
+    variable v : std_logic_vector(6 downto 0);
+  begin
+    if riego_active = '0' then
+      leds <= (others => '0');
+    else
+      v := (others => '0');
+      v(pos) := '1';
+
+      if phase = '1' then
+        leds <= v xor "1010101";
+      else
+        leds <= v xor "0101010";
+      end if;
+    end if;
+  end process;
+
+end architecture rtl;
+
